@@ -58,7 +58,7 @@ class AIASPROPlugin(BasePlugin):
             logger.error(f"Failed to initialize AIASPRO: {e}", exc_info=True)
             return False
     
-    def create_menu_items(self) -> Dict[str, QtWidgets.QAction]:
+    def create_menu_items(self) -> Dict[str, QtGui.QAction]:
         """Create AI Assistant menu items
         
         Returns:
@@ -67,26 +67,26 @@ class AIASPROPlugin(BasePlugin):
         actions = {}
         
         # Open AI Assistant action
-        open_action = QtWidgets.QAction("Open AI Assistant", self.main_window)
+        open_action = QtGui.QAction("Open AI Assistant", self.main_window)
         open_action.setShortcut("Ctrl+Shift+A")
         open_action.setStatusTip("Open the AI Assistant window")
         open_action.triggered.connect(self._open_assistant)
         actions["open_assistant"] = open_action
         
         # Quick Query action
-        quick_action = QtWidgets.QAction("Quick AI Query", self.main_window)
+        quick_action = QtGui.QAction("Quick AI Query", self.main_window)
         quick_action.setShortcut("Ctrl+Shift+Q")
         quick_action.setStatusTip("Open quick AI query dialog")
         quick_action.triggered.connect(self._quick_query)
         actions["quick_query"] = quick_action
         
         # Separator
-        separator = QtWidgets.QAction(self.main_window)
+        separator = QtGui.QAction(self.main_window)
         separator.setSeparator(True)
         actions["separator"] = separator
         
         # Settings action
-        settings_action = QtWidgets.QAction("AI Settings...", self.main_window)
+        settings_action = QtGui.QAction("AI Settings...", self.main_window)
         settings_action.setStatusTip("Configure AI Assistant settings")
         settings_action.triggered.connect(self._open_settings)
         actions["settings"] = settings_action
@@ -125,7 +125,7 @@ class AIASPROPlugin(BasePlugin):
         actions = []
         
         # AI Assistant toolbar button
-        ai_action = QtWidgets.QAction(self.main_window)
+        ai_action = QtGui.QAction(self.main_window)
         ai_action.setText("AI")
         ai_action.setToolTip("Open AI Assistant (Ctrl+Shift+A)")
         ai_action.triggered.connect(self._open_assistant)
@@ -194,11 +194,12 @@ class AIASPROPlugin(BasePlugin):
     # Private methods
     
     def _open_assistant(self) -> None:
-        """Open AI Assistant in MDI area"""
+        """Open AI Assistant in appropriate MDI area"""
         logger.info("Opening AI Assistant")
         
-        # Check if MDI area exists
-        if not hasattr(self.main_window, 'mdi_area'):
+        # Get the appropriate MDI area based on current mode
+        mdi_area = self._get_current_mdi_area()
+        if not mdi_area:
             QtWidgets.QMessageBox.warning(
                 self.main_window,
                 "AI Assistant",
@@ -206,10 +207,12 @@ class AIASPROPlugin(BasePlugin):
             )
             return
         
-        # Check if assistant is already open
-        for window in self.main_window.mdi_area.subWindowList():
+        # Check if assistant is already open in this MDI area
+        for window in mdi_area.subWindowList():
             if window.widget() and window.widget().objectName() == "AIAssistantWidget":
                 window.setFocus()
+                window.activateWindow()
+                mdi_area.setActiveSubWindow(window)
                 return
         
         # Create new assistant window
@@ -230,11 +233,12 @@ class AIASPROPlugin(BasePlugin):
             if current_file and hasattr(assistant, 'set_file_widget'):
                 assistant.set_file_widget(current_file)
             
-            # Add to MDI area
-            mdi_window = self.main_window.mdi_area.addSubWindow(assistant)
+            # Add to appropriate MDI area
+            mdi_window = mdi_area.addSubWindow(assistant)
             mdi_window.setWindowTitle("AI Assistant Pro")
             mdi_window.setGeometry(100, 100, 600, 800)
             mdi_window.show()
+            mdi_area.setActiveSubWindow(mdi_window)
             
         except Exception as e:
             logger.error(f"Failed to open AI Assistant: {e}", exc_info=True)
@@ -293,27 +297,58 @@ class AIASPROPlugin(BasePlugin):
                 "Settings dialog not implemented yet."
             )
     
+    def _get_current_mdi_area(self) -> Optional[Any]:
+        """Get the appropriate MDI area based on current mode
+        
+        Returns:
+            Current MDI area or None
+        """
+        if not hasattr(self.main_window, 'stackedWidget'):
+            return None
+            
+        current_index = self.main_window.stackedWidget.currentIndex()
+        
+        if current_index == 0:  # Single files mode
+            # Get current file widget and its MDI area
+            if hasattr(self.main_window, 'files') and self.main_window.files.count() > 0:
+                current_file_widget = self.main_window.files.currentWidget()
+                if current_file_widget and hasattr(current_file_widget, 'mdi_area'):
+                    return current_file_widget.mdi_area
+        elif current_index == 2:  # Comparison mode
+            # Use main window's MDI area for comparison
+            if hasattr(self.main_window, 'mdi_area'):
+                return self.main_window.mdi_area
+        
+        return None
+    
     def _get_current_file_widget(self) -> Optional[Any]:
         """Get the currently active file widget
         
         Returns:
             Current file widget or None
         """
-        if not hasattr(self.main_window, 'mdi_area'):
+        if not hasattr(self.main_window, 'stackedWidget'):
             return None
             
-        active_window = self.main_window.mdi_area.activeSubWindow()
-        if active_window:
-            widget = active_window.widget()
-            # Check if it's a file widget (has mdf attribute)
-            if hasattr(widget, 'mdf'):
-                return widget
+        current_index = self.main_window.stackedWidget.currentIndex()
         
-        # Fall back to checking all windows
-        for window in self.main_window.mdi_area.subWindowList():
-            widget = window.widget()
-            if widget and hasattr(widget, 'mdf'):
-                return widget
+        if current_index == 0:  # Single files mode
+            if hasattr(self.main_window, 'files') and self.main_window.files.count() > 0:
+                return self.main_window.files.currentWidget()
+        elif current_index == 2:  # Comparison mode
+            # In comparison mode, files are in MDI area
+            mdi_area = self.main_window.mdi_area
+            active_window = mdi_area.activeSubWindow()
+            if active_window:
+                widget = active_window.widget()
+                if hasattr(widget, 'mdf'):
+                    return widget
+            
+            # Fall back to first file widget found
+            for window in mdi_area.subWindowList():
+                widget = window.widget()
+                if widget and hasattr(widget, 'mdf'):
+                    return widget
         
         return None
 

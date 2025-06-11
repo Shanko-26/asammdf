@@ -25,9 +25,14 @@ from .batch import BatchWidget
 from .file import FileWidget
 from .mdi_area import get_functions, MdiAreaWidget, WithMDIArea
 from .plot import Plot
+from ..plugins import PluginManager
 
 
 class MainWindow(WithMDIArea, Ui_PyMDFMainWindow, QtWidgets.QMainWindow):
+    # Define signals as class attributes
+    file_loaded = QtCore.Signal(object)
+    file_closed = QtCore.Signal(object)
+    
     def __init__(self, files=None, *args, **kwargs):
         super(Ui_PyMDFMainWindow, self).__init__(*args, **kwargs)
         WithMDIArea.__init__(self, comparison=True)
@@ -869,8 +874,47 @@ class MainWindow(WithMDIArea, Ui_PyMDFMainWindow, QtWidgets.QMainWindow):
 
         self.setAcceptDrops(True)
 
+        # Initialize plugin system
+        self._init_plugin_system()
+
         self.show()
         self.fullscreen = None
+
+    def _init_plugin_system(self):
+        """Initialize the plugin system and load available plugins"""
+        try:
+            # Create plugin manager
+            self.plugin_manager = PluginManager(self)
+            
+            # Connect plugin signals
+            self.plugin_manager.plugin_loaded.connect(self._on_plugin_loaded)
+            self.plugin_manager.plugin_error.connect(self._on_plugin_error)
+            
+            # Discover and load plugins
+            available_plugins = self.plugin_manager.discover_plugins()
+            
+            # Load AIASPRO if available
+            if "aiaspro" in available_plugins:
+                success = self.plugin_manager.load_plugin("aiaspro")
+                if success:
+                    print("✅ AIASPRO plugin loaded successfully")
+                else:
+                    print("❌ Failed to load AIASPRO plugin")
+            else:
+                print("ℹ️ AIASPRO plugin not found in available plugins")
+                
+        except Exception as e:
+            print(f"⚠️ Failed to initialize plugin system: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_plugin_loaded(self, plugin_name: str):
+        """Handle plugin loaded event"""
+        print(f"Plugin loaded: {plugin_name}")
+
+    def _on_plugin_error(self, plugin_name: str, error_msg: str):
+        """Handle plugin error event"""
+        print(f"Plugin error in {plugin_name}: {error_msg}")
 
     def comparison_dsp(self, event=None):
         windows = list(self.mdi_area.subWindowList())
@@ -1384,6 +1428,9 @@ class MainWindow(WithMDIArea, Ui_PyMDFMainWindow, QtWidgets.QMainWindow):
                 widget.full_screen_toggled.connect(self.toggle_fullscreen)
 
                 self.edit_cursor_options()
+                
+                # Emit file loaded signal for plugins
+                self.file_loaded.emit(widget)
 
     def open_file(self, event):
         system = platform.system().lower()
@@ -1449,6 +1496,9 @@ class MainWindow(WithMDIArea, Ui_PyMDFMainWindow, QtWidgets.QMainWindow):
     def close_file(self, index):
         widget = self.files.widget(index)
         if widget:
+            # Emit file closed signal for plugins
+            self.file_closed.emit(widget)
+                
             widget.close()
             widget.setParent(None)
             widget.deleteLater()

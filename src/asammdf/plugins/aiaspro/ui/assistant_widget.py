@@ -1,7 +1,9 @@
 """AI Assistant widget for asammdf MDI integration"""
 
+import asyncio
 import logging
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Optional, Any
 
 from PySide6 import QtCore, QtWidgets, QtGui
 
@@ -11,542 +13,456 @@ logger = logging.getLogger("asammdf.plugins.aiaspro.ui")
 class AIAssistantWidget(QtWidgets.QWidget):
     """Main AI Assistant widget for MDI integration
     
-    This widget provides the primary interface for interacting with the AI Assistant.
-    It includes a chat interface, input area, and integration with asammdf's file system.
+    This widget provides a chat-like interface for interacting with
+    AI agents that can analyze automotive data.
     """
     
-    # Signals for communication with other components
-    query_submitted = QtCore.Signal(str)  # Emitted when user submits a query
-    response_received = QtCore.Signal(str)  # Emitted when AI response is received
-    file_changed = QtCore.Signal(object)  # Emitted when associated file changes
+    # Signals
+    query_submitted = QtCore.Signal(str)
+    response_received = QtCore.Signal(str)
+    # Required by MDI area (must match MdiSubWindow signature)
+    resized = QtCore.Signal(object, object, object)  # self, new_size, old_size
+    moved = QtCore.Signal(object, object, object)    # self, new_position, old_position
     
     def __init__(self, main_window, parent=None):
         """Initialize AI Assistant widget
         
         Args:
-            main_window: Reference to asammdf main window
-            parent: Parent widget (optional)
+            main_window: Reference to asammdf MainWindow
+            parent: Parent widget
         """
         super().__init__(parent)
         self.main_window = main_window
-        self.file_widget = None  # Will be set when file is loaded
-        self.current_query = ""
-        self.is_processing = False
+        self.file_widget = None  # Current file widget
+        self.ai_system = None  # Will be initialized later
         
-        # Setup the user interface
         self._setup_ui()
         self._connect_signals()
-        self._apply_styling()
-        
-        logger.info("AI Assistant widget initialized")
+        self._init_ai_system()
     
     def _setup_ui(self):
-        """Setup the user interface components"""
-        # Main layout
+        """Setup the UI components"""
+        self.setMinimumSize(400, 600)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
         
-        # Title bar with plugin info and settings
-        self._create_title_bar(layout)
-        
-        # Status indicator
-        self._create_status_indicator(layout)
-        
-        # Chat display area
-        self._create_chat_display(layout)
-        
-        # Input area for queries
-        self._create_input_area(layout)
-        
-        # Progress indicator
-        self._create_progress_indicator(layout)
-        
-        # Suggestions panel
-        self._create_suggestions_panel(layout)
-        
-        # Initially hide progress indicator
-        self.progress_bar.setVisible(False)
-    
-    def _create_title_bar(self, layout):
-        """Create title bar with plugin info and settings button"""
+        # Title bar
         title_layout = QtWidgets.QHBoxLayout()
-        
-        # Plugin title and version
         title_label = QtWidgets.QLabel("🤖 AI Assistant Pro")
-        title_label.setObjectName("title_label")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px; 
+                font-weight: bold; 
+                color: #2c3e50;
+                padding: 8px;
+            }
+        """)
         title_layout.addWidget(title_label)
-        
-        # Status text (will show file info)
-        self.status_label = QtWidgets.QLabel("No file loaded")
-        self.status_label.setObjectName("status_label")
-        title_layout.addWidget(self.status_label)
-        
-        # Stretch to push settings button to the right
         title_layout.addStretch()
         
-        # Settings button
-        settings_btn = QtWidgets.QPushButton("⚙️")
-        settings_btn.setObjectName("settings_button")
-        settings_btn.setFixedSize(30, 30)
-        settings_btn.setToolTip("Open AI Assistant settings")
-        settings_btn.clicked.connect(self._open_settings)
-        title_layout.addWidget(settings_btn)
+        # Status indicator
+        self.status_label = QtWidgets.QLabel("Ready")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                background-color: #27ae60;
+                color: white;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+        """)
+        title_layout.addWidget(self.status_label)
         
         layout.addLayout(title_layout)
-    
-    def _create_status_indicator(self, layout):
-        """Create status indicator for AI connection"""
-        status_layout = QtWidgets.QHBoxLayout()
         
-        # Connection status indicator
-        self.connection_indicator = QtWidgets.QLabel("●")
-        self.connection_indicator.setObjectName("connection_indicator")
-        self.connection_indicator.setToolTip("AI service connection status")
-        status_layout.addWidget(self.connection_indicator)
+        # File info
+        self.file_info = QtWidgets.QLabel("No file loaded")
+        self.file_info.setStyleSheet("""
+            QLabel {
+                background-color: #ecf0f1;
+                padding: 6px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #7f8c8d;
+            }
+        """)
+        layout.addWidget(self.file_info)
         
-        # Status text
-        self.connection_status = QtWidgets.QLabel("Ready")
-        self.connection_status.setObjectName("connection_status")
-        status_layout.addWidget(self.connection_status)
-        
-        status_layout.addStretch()
-        
-        layout.addLayout(status_layout)
-    
-    def _create_chat_display(self, layout):
-        """Create chat display area"""
-        # Chat display with scrolling
+        # Chat display
         self.chat_display = QtWidgets.QTextEdit()
-        self.chat_display.setObjectName("chat_display")
         self.chat_display.setReadOnly(True)
-        self.chat_display.setMinimumHeight(300)
-        
-        # Set placeholder text
-        self.chat_display.setPlaceholderText(
-            "Welcome to AI Assistant Pro!\n\n"
-            "Load an MDF file and start asking questions about your data:\n"
-            "• \"Show me all engine-related signals\"\n"
-            "• \"Plot engine RPM and speed\"\n"
-            "• \"Find any anomalies in the brake pressure data\"\n"
-            "• \"What's the correlation between speed and fuel consumption?\""
-        )
-        
-        layout.addWidget(self.chat_display)
-    
-    def _create_input_area(self, layout):
-        """Create input area for user queries"""
-        input_layout = QtWidgets.QHBoxLayout()
-        
-        # Query input field
-        self.query_input = QtWidgets.QLineEdit()
-        self.query_input.setObjectName("query_input")
-        self.query_input.setPlaceholderText("Ask me about your data...")
-        self.query_input.returnPressed.connect(self._handle_submit)
-        input_layout.addWidget(self.query_input)
-        
-        # Send button
-        self.send_button = QtWidgets.QPushButton("Send")
-        self.send_button.setObjectName("send_button")
-        self.send_button.clicked.connect(self._handle_submit)
-        self.send_button.setDefault(True)
-        input_layout.addWidget(self.send_button)
-        
-        # Clear button
-        clear_button = QtWidgets.QPushButton("Clear")
-        clear_button.setObjectName("clear_button")
-        clear_button.clicked.connect(self._clear_chat)
-        clear_button.setToolTip("Clear chat history")
-        input_layout.addWidget(clear_button)
-        
-        layout.addLayout(input_layout)
-    
-    def _create_progress_indicator(self, layout):
-        """Create progress indicator for AI processing"""
-        self.progress_bar = QtWidgets.QProgressBar()
-        self.progress_bar.setObjectName("progress_bar")
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("Processing query...")
-        layout.addWidget(self.progress_bar)
-    
-    def _create_suggestions_panel(self, layout):
-        """Create suggestions panel for query suggestions"""
-        # Suggestions group box
-        suggestions_group = QtWidgets.QGroupBox("💡 Suggestions")
-        suggestions_group.setObjectName("suggestions_group")
-        suggestions_layout = QtWidgets.QVBoxLayout(suggestions_group)
-        
-        # Suggestions will be added dynamically
-        self.suggestions_layout = suggestions_layout
-        
-        # Initially hide suggestions
-        suggestions_group.setVisible(False)
-        self.suggestions_group = suggestions_group
-        
-        layout.addWidget(suggestions_group)
-    
-    def _connect_signals(self):
-        """Connect internal signals and slots"""
-        # Connect query submission
-        self.query_submitted.connect(self._on_query_submitted)
-        self.response_received.connect(self._on_response_received)
-    
-    def _apply_styling(self):
-        """Apply custom styling to the widget"""
-        self.setStyleSheet("""
-            QWidget#title_label {
-                font-size: 16px;
-                font-weight: bold;
-                color: #2c3e50;
-                margin: 4px;
-            }
-            
-            QWidget#status_label {
-                font-size: 12px;
-                color: #7f8c8d;
-                margin: 4px;
-            }
-            
-            QWidget#connection_indicator {
-                color: #27ae60;
-                font-size: 12px;
-            }
-            
-            QWidget#connection_status {
-                font-size: 12px;
-                color: #7f8c8d;
-            }
-            
-            QTextEdit#chat_display {
+        self.chat_display.setStyleSheet("""
+            QTextEdit {
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 12px;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 13px;
+                line-height: 1.4;
+            }
+        """)
+        layout.addWidget(self.chat_display, 1)  # Expandable
+        
+        # Input area
+        input_frame = QtWidgets.QFrame()
+        input_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                padding: 4px;
+            }
+        """)
+        input_layout = QtWidgets.QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(8, 8, 8, 8)
+        
+        self.query_input = QtWidgets.QLineEdit()
+        self.query_input.setPlaceholderText("Ask me about your automotive data...")
+        self.query_input.setStyleSheet("""
+            QLineEdit {
+                border: none;
+                font-size: 13px;
                 padding: 8px;
-                font-family: "Segoe UI", sans-serif;
-                font-size: 12px;
+                background: transparent;
             }
-            
-            QLineEdit#query_input {
-                padding: 8px;
-                border: 1px solid #ced4da;
-                border-radius: 4px;
-                font-size: 12px;
-            }
-            
-            QLineEdit#query_input:focus {
-                border: 2px solid #007AFF;
-            }
-            
-            QPushButton#send_button {
+        """)
+        
+        self.send_button = QtWidgets.QPushButton("Send")
+        self.send_button.setStyleSheet("""
+            QPushButton {
                 background-color: #007AFF;
                 color: white;
                 border: none;
-                border-radius: 4px;
                 padding: 8px 16px;
+                border-radius: 6px;
                 font-weight: bold;
+                font-size: 13px;
             }
-            
-            QPushButton#send_button:hover {
+            QPushButton:hover {
                 background-color: #0056b3;
             }
-            
-            QPushButton#send_button:pressed {
-                background-color: #004494;
-            }
-            
-            QPushButton#send_button:disabled {
+            QPushButton:disabled {
                 background-color: #6c757d;
             }
-            
-            QPushButton#clear_button {
-                background-color: #6c757d;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-            }
-            
-            QPushButton#clear_button:hover {
-                background-color: #5a6268;
-            }
-            
-            QPushButton#settings_button {
-                border: 1px solid #ced4da;
-                border-radius: 4px;
-                background-color: white;
-            }
-            
-            QPushButton#settings_button:hover {
-                background-color: #f8f9fa;
-            }
-            
-            QProgressBar#progress_bar {
-                border: 1px solid #ced4da;
+        """)
+        
+        input_layout.addWidget(self.query_input, 1)
+        input_layout.addWidget(self.send_button)
+        layout.addWidget(input_frame)
+        
+        # Progress indicator
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #dee2e6;
                 border-radius: 4px;
                 text-align: center;
+                font-size: 11px;
             }
-            
-            QProgressBar#progress_bar::chunk {
+            QProgressBar::chunk {
                 background-color: #007AFF;
                 border-radius: 3px;
             }
-            
-            QGroupBox#suggestions_group {
-                font-weight: bold;
-                border: 1px solid #ced4da;
-                border-radius: 4px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
         """)
-    
-    # Public interface methods
-    
-    def set_file_widget(self, file_widget):
-        """Set the associated file widget
+        layout.addWidget(self.progress_bar)
         
-        Args:
-            file_widget: The asammdf FileWidget instance
-        """
-        self.file_widget = file_widget
+        # Quick actions
+        actions_frame = QtWidgets.QFrame()
+        actions_layout = QtWidgets.QHBoxLayout(actions_frame)
+        actions_layout.setContentsMargins(0, 4, 0, 0)
         
-        # Update status
-        if file_widget and hasattr(file_widget, 'file_name'):
-            file_name = getattr(file_widget, 'file_name', 'Unknown file')
-            self.status_label.setText(f"File: {file_name}")
+        # Quick action buttons
+        quick_buttons = [
+            ("📊 List Channels", "List all channels in the current file"),
+            ("🔍 Search Signals", "Search for specific signals"),
+            ("📈 Analyze Data", "Get data analysis suggestions"),
+        ]
+        
+        for text, tooltip in quick_buttons:
+            btn = QtWidgets.QPushButton(text)
+            btn.setToolTip(tooltip)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e9ecef;
+                    border: 1px solid #ced4da;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 11px;
+                    color: #495057;
+                }
+                QPushButton:hover {
+                    background-color: #dee2e6;
+                }
+            """)
+            btn.clicked.connect(lambda checked, t=tooltip.split()[-1].lower(): self._quick_action(t))
+            actions_layout.addWidget(btn)
+        
+        actions_layout.addStretch()
+        layout.addWidget(actions_frame)
+        
+        # Add welcome message
+        self._add_welcome_message()
+    
+    def _connect_signals(self):
+        """Connect widget signals"""
+        self.send_button.clicked.connect(self._handle_submit)
+        self.query_input.returnPressed.connect(self._handle_submit)
+        self.query_submitted.connect(self._process_query)
+    
+    def _init_ai_system(self):
+        """Initialize AI system components"""
+        try:
+            # Import AI components
+            from ..core.dependencies import AIASPRODependencies
+            from ..core.orchestrator import AIOrchestrator
+            from ..config import AIASPROConfig
             
-            # Show suggestions for loaded file
-            self._update_suggestions_for_file()
-        else:
-            self.status_label.setText("No file loaded")
-            self._hide_suggestions()
-        
-        self.file_changed.emit(file_widget)
-        logger.info(f"File widget set: {getattr(file_widget, 'file_name', 'None')}")
+            # Load configuration
+            config = AIASPROConfig()
+            config.load()
+            
+            # Setup dependencies
+            self.deps = AIASPRODependencies(
+                main_window=self.main_window,
+                llm_config=config.llm.dict() if hasattr(config.llm, 'dict') else config.llm,
+            )
+            
+            # Create orchestrator
+            self.orchestrator = AIOrchestrator(self.deps)
+            
+            self.status_label.setText("AI Ready")
+            self.status_label.setStyleSheet(self.status_label.styleSheet().replace("#27ae60", "#27ae60"))
+            
+            logger.info("AI system initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize AI system: {e}", exc_info=True)
+            self.status_label.setText("AI Error")
+            self.status_label.setStyleSheet(self.status_label.styleSheet().replace("#27ae60", "#e74c3c"))
+            
+            # Show error in chat
+            self._add_system_message(f"⚠️ AI system initialization failed: {str(e)}")
     
-    def clear_file_widget(self, file_widget=None):
-        """Clear the associated file widget
-        
-        Args:
-            file_widget: The file widget being cleared (optional)
+    def _add_welcome_message(self):
+        """Add welcome message to chat"""
+        welcome_html = """
+        <div style="background-color: #e3f2fd; border-left: 4px solid #2196f3; padding: 12px; margin: 8px 0; border-radius: 4px;">
+            <h4 style="margin: 0 0 8px 0; color: #1976d2;">🤖 Welcome to AI Assistant Pro!</h4>
+            <p style="margin: 0; color: #424242; font-size: 13px;">
+                I can help you analyze automotive measurement data. Try asking me:
+            </p>
+            <ul style="margin: 8px 0 0 20px; color: #424242; font-size: 12px;">
+                <li>What channels are available in this file?</li>
+                <li>Show me engine-related signals</li>
+                <li>Analyze the Engine_Speed signal</li>
+                <li>What types of data do I have?</li>
+            </ul>
+        </div>
         """
-        if file_widget is None or self.file_widget == file_widget:
-            self.file_widget = None
-            self.status_label.setText("No file loaded")
-            self._hide_suggestions()
-            self.file_changed.emit(None)
-            logger.info("File widget cleared")
+        self.chat_display.append(welcome_html)
     
-    def add_message(self, role: str, content: str, timestamp: str = None):
-        """Add a message to the chat display
-        
-        Args:
-            role: Message role ('user', 'assistant', 'system')
-            content: Message content
-            timestamp: Optional timestamp string
+    def _add_system_message(self, message: str):
+        """Add system message to chat"""
+        html = f"""
+        <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 8px; margin: 4px 0; border-radius: 4px;">
+            <p style="margin: 0; color: #856404; font-size: 12px;">
+                <strong>System:</strong> {message}
+            </p>
+        </div>
         """
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        
-        # Format message based on role
-        if role == "user":
-            html = f"""
-            <div style="text-align: right; margin: 8px 0;">
-                <span style="background-color: #007AFF; color: white; 
-                           padding: 8px 12px; border-radius: 16px; 
-                           display: inline-block; max-width: 70%;">
-                    {content}
-                </span>
-                {f'<br><small style="color: #6c757d;">{timestamp}</small>' if timestamp else ''}
+        self.chat_display.append(html)
+    
+    def _add_user_message(self, message: str):
+        """Add user message to chat"""
+        html = f"""
+        <div style="text-align: right; margin: 8px 0;">
+            <div style="background-color: #007AFF; color: white; padding: 8px 12px; border-radius: 16px; display: inline-block; max-width: 70%; text-align: left;">
+                {message}
             </div>
-            """
-        elif role == "assistant":
-            html = f"""
-            <div style="text-align: left; margin: 8px 0;">
-                <span style="background-color: #e9ecef; color: #212529; 
-                           padding: 8px 12px; border-radius: 16px; 
-                           display: inline-block; max-width: 70%;">
-                    {content}
-                </span>
-                {f'<br><small style="color: #6c757d;">{timestamp}</small>' if timestamp else ''}
-            </div>
-            """
-        elif role == "system":
-            html = f"""
-            <div style="text-align: center; margin: 8px 0;">
-                <small style="color: #6c757d; font-style: italic;">
-                    {content}
-                </small>
-            </div>
-            """
-        
-        cursor.insertHtml(html)
-        
-        # Scroll to bottom
-        self.chat_display.verticalScrollBar().setValue(
-            self.chat_display.verticalScrollBar().maximum()
-        )
-    
-    def set_connection_status(self, connected: bool, message: str = ""):
-        """Set AI connection status
-        
-        Args:
-            connected: Whether AI service is connected
-            message: Status message
+        </div>
         """
-        if connected:
-            self.connection_indicator.setStyleSheet("color: #27ae60;")  # Green
-            self.connection_status.setText(message or "Connected")
-        else:
-            self.connection_indicator.setStyleSheet("color: #e74c3c;")  # Red
-            self.connection_status.setText(message or "Disconnected")
+        self.chat_display.append(html)
+        self.chat_display.ensureCursorVisible()
     
-    def set_processing(self, processing: bool):
-        """Set processing state
+    def _add_assistant_message(self, message: str):
+        """Add assistant message to chat"""
+        # Convert newlines to HTML breaks
+        message = message.replace('\n', '<br>')
         
-        Args:
-            processing: Whether AI is currently processing
+        html = f"""
+        <div style="text-align: left; margin: 8px 0;">
+            <div style="background-color: #f1f3f4; color: #333; padding: 8px 12px; border-radius: 16px; display: inline-block; max-width: 85%; border: 1px solid #e0e0e0;">
+                {message}
+            </div>
+        </div>
         """
-        self.is_processing = processing
-        self.progress_bar.setVisible(processing)
-        self.send_button.setEnabled(not processing)
-        self.query_input.setEnabled(not processing)
-        
-        if processing:
-            self.query_input.setPlaceholderText("Processing...")
-        else:
-            self.query_input.setPlaceholderText("Ask me about your data...")
-    
-    # Private methods
+        self.chat_display.append(html)
+        self.chat_display.ensureCursorVisible()
     
     def _handle_submit(self):
         """Handle query submission"""
         query = self.query_input.text().strip()
-        if not query or self.is_processing:
+        if not query:
             return
         
-        # Store current query
-        self.current_query = query
-        
-        # Clear input
+        # Add to chat display
+        self._add_user_message(query)
         self.query_input.clear()
         
-        # Add user message to chat
-        self.add_message("user", query)
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.send_button.setEnabled(False)
         
-        # Set processing state
-        self.set_processing(True)
-        
-        # Emit signal for processing
+        # Emit signal to process query
         self.query_submitted.emit(query)
     
-    def _clear_chat(self):
-        """Clear chat history"""
-        self.chat_display.clear()
-        logger.info("Chat history cleared")
-    
-    def _open_settings(self):
-        """Open AI Assistant settings"""
-        # This would open the settings dialog
-        # For now, just show a placeholder
-        QtWidgets.QMessageBox.information(
-            self,
-            "AI Settings",
-            "Settings dialog will be implemented in the next phase."
-        )
-    
-    def _update_suggestions_for_file(self):
-        """Update suggestions based on loaded file"""
-        if not self.file_widget:
+    def _process_query(self, query: str):
+        """Process query asynchronously"""
+        if not hasattr(self, 'orchestrator') or not self.orchestrator:
+            self._add_system_message("AI system not available. Please check configuration.")
+            self._query_finished()
             return
         
-        # Sample suggestions based on automotive data
-        suggestions = [
-            "Show me all engine-related signals",
-            "Plot engine RPM and vehicle speed",
-            "Find correlations between signals",
-            "Analyze brake pressure data",
-            "Show signal statistics",
-            "List all available channels"
-        ]
-        
-        self._show_suggestions(suggestions)
+        # Run in thread to avoid blocking UI
+        self.worker_thread = QueryWorkerThread(self.orchestrator, query, self.deps)
+        self.worker_thread.response_ready.connect(self._handle_response)
+        self.worker_thread.error_occurred.connect(self._handle_error)
+        self.worker_thread.finished.connect(self._query_finished)
+        self.worker_thread.start()
     
-    def _show_suggestions(self, suggestions: list):
-        """Show suggestion buttons
+    def _handle_response(self, response: str):
+        """Handle AI response"""
+        self._add_assistant_message(response)
+    
+    def _handle_error(self, error: str):
+        """Handle AI error"""
+        self._add_system_message(f"Error: {error}")
+    
+    def _query_finished(self):
+        """Handle query completion"""
+        self.progress_bar.setVisible(False)
+        self.send_button.setEnabled(True)
+    
+    def _quick_action(self, action: str):
+        """Handle quick action button clicks"""
+        if action == "suggestions":
+            self.query_input.setText("What analysis can I perform on this data?")
+        elif action == "signals":
+            self.query_input.setText("Search for engine signals")
+        elif action == "channels":
+            self.query_input.setText("List all channels")
+        
+        self._handle_submit()
+    
+    def set_file_widget(self, file_widget: Any):
+        """Set the current file widget
         
         Args:
-            suggestions: List of suggestion strings
+            file_widget: FileWidget instance with MDF data
         """
-        # Clear existing suggestions
-        self._clear_suggestions()
+        self.file_widget = file_widget
         
-        # Add new suggestions
-        for suggestion in suggestions[:6]:  # Limit to 6 suggestions
-            btn = QtWidgets.QPushButton(suggestion)
-            btn.setStyleSheet("""
-                QPushButton {
-                    text-align: left;
-                    padding: 6px 12px;
-                    border: 1px solid #ced4da;
+        if file_widget and hasattr(file_widget, 'file_name'):
+            file_name = Path(file_widget.file_name).name
+            channel_count = len(file_widget.mdf.channels_db) if hasattr(file_widget, 'mdf') else 0
+            
+            self.file_info.setText(f"📁 {file_name} ({channel_count:,} channels)")
+            self.file_info.setStyleSheet("""
+                QLabel {
+                    background-color: #d4edda;
+                    padding: 6px;
                     border-radius: 4px;
-                    background-color: #f8f9fa;
-                    margin: 2px;
-                }
-                QPushButton:hover {
-                    background-color: #e9ecef;
-                }
-                QPushButton:pressed {
-                    background-color: #dee2e6;
+                    font-size: 12px;
+                    color: #155724;
                 }
             """)
-            btn.clicked.connect(lambda checked, s=suggestion: self._use_suggestion(s))
-            self.suggestions_layout.addWidget(btn)
-        
-        self.suggestions_group.setVisible(True)
+            
+            # Update dependencies
+            if hasattr(self, 'deps'):
+                self.deps.update_for_file(file_widget)
+            
+            # Add file loaded message
+            self._add_system_message(f"File loaded: {file_name} with {channel_count:,} channels")
+        else:
+            self.file_info.setText("No file loaded")
+            self.file_info.setStyleSheet("""
+                QLabel {
+                    background-color: #ecf0f1;
+                    padding: 6px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    color: #7f8c8d;
+                }
+            """)
     
-    def _hide_suggestions(self):
-        """Hide suggestions panel"""
-        self.suggestions_group.setVisible(False)
+    def clear_file_widget(self, file_widget: Any):
+        """Clear file widget if it matches the current one"""
+        if self.file_widget == file_widget:
+            self.file_widget = None
+            self.file_info.setText("No file loaded")
+            
+            if hasattr(self, 'deps'):
+                self.deps.clear_file_context()
+
+    def resizeEvent(self, event):
+        """Handle resize events and emit signal for MDI area"""
+        old_size = event.oldSize()
+        new_size = event.size()
+        super().resizeEvent(event)
+        
+        # Emit with the signature expected by MDI area: (self, new_size, old_size)
+        if old_size.isValid():
+            self.resized.emit(self, new_size, old_size)
+
+    def moveEvent(self, event):
+        """Handle move events and emit signal for MDI area"""
+        old_position = event.oldPos()
+        new_position = event.pos()
+        super().moveEvent(event)
+        
+        # Emit with the signature expected by MDI area: (self, new_position, old_position)
+        self.moved.emit(self, new_position, old_position)
+
+
+class QueryWorkerThread(QtCore.QThread):
+    """Worker thread for processing AI queries"""
     
-    def _clear_suggestions(self):
-        """Clear all suggestion buttons"""
-        while self.suggestions_layout.count():
-            child = self.suggestions_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+    response_ready = QtCore.Signal(str)
+    error_occurred = QtCore.Signal(str)
     
-    def _use_suggestion(self, suggestion: str):
-        """Use a suggestion as query
-        
-        Args:
-            suggestion: The suggestion text to use
-        """
-        self.query_input.setText(suggestion)
-        self.query_input.setFocus()
+    def __init__(self, orchestrator, query, deps):
+        super().__init__()
+        self.orchestrator = orchestrator
+        self.query = query
+        self.deps = deps
     
-    @QtCore.Slot(str)
-    def _on_query_submitted(self, query: str):
-        """Handle query submission signal
-        
-        Args:
-            query: The submitted query
-        """
-        logger.info(f"Query submitted: {query}")
-        # The actual AI processing will be handled by the orchestrator
-    
-    @QtCore.Slot(str)
-    def _on_response_received(self, response: str):
-        """Handle AI response signal
-        
-        Args:
-            response: The AI response
-        """
-        # Add AI response to chat
-        self.add_message("assistant", response)
-        
-        # Clear processing state
-        self.set_processing(False)
-        
-        logger.info("AI response received and displayed")
+    def run(self):
+        """Run the query processing"""
+        try:
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Run the query
+            result = loop.run_until_complete(
+                self.orchestrator.route_and_execute(self.query)
+            )
+            
+            # Get response text
+            if hasattr(result, 'output'):
+                response = str(result.output)
+            elif hasattr(result, 'data'):
+                response = str(result.data)
+            else:
+                response = str(result)
+            
+            self.response_ready.emit(response)
+            loop.close()
+            
+        except Exception as e:
+            logger.error(f"Error in query worker thread: {e}", exc_info=True)
+            self.error_occurred.emit(str(e))

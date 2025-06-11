@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets, QtGui
 
 
 class BasePlugin(ABC):
@@ -33,7 +33,7 @@ class BasePlugin(ABC):
         pass
     
     @abstractmethod
-    def create_menu_items(self) -> Dict[str, QtWidgets.QAction]:
+    def create_menu_items(self) -> Dict[str, QtGui.QAction]:
         """Create menu items to be added to main window
         
         Returns:
@@ -50,7 +50,7 @@ class BasePlugin(ABC):
         """
         pass
     
-    def create_toolbar_actions(self) -> List[QtWidgets.QAction]:
+    def create_toolbar_actions(self) -> List[QtGui.QAction]:
         """Create toolbar actions (optional)
         
         Returns:
@@ -58,7 +58,7 @@ class BasePlugin(ABC):
         """
         return []
     
-    def create_context_menu_actions(self, context: str) -> List[QtWidgets.QAction]:
+    def create_context_menu_actions(self, context: str) -> List[QtGui.QAction]:
         """Create context menu actions for specific contexts (optional)
         
         Args:
